@@ -28,6 +28,14 @@ class Store:
         self._anomaly_records: list[dict[str, Any]] = []
         # Recalc history
         self._recalc_history: list[dict[str, Any]] = []
+        # 观察窗（按时间归属的指标采样窗口）
+        self._observation_windows: list[dict[str, Any]] = []
+        # 指标采样数据：样本按 sample_time 归属到观察窗
+        self._metric_samples: list[dict[str, Any]] = []
+        # 批量巡检批次与逐规则检测结论
+        self._inspection_batches: list[dict[str, Any]] = []
+        # 检测规则触发的告警及其处置状态
+        self._alerts: list[dict[str, Any]] = []
         # Lock for thread safety
         self._lock = threading.Lock()
 
@@ -83,7 +91,8 @@ class Store:
     # ── Query journal ──
 
     def log_query(self, metric_id: int, operator: str, sql_summary: str,
-                  row_count: int, duration_ms: float, status: str = "正常") -> dict[str, Any]:
+                  row_count: int, duration_ms: float, status: str = "正常",
+                  extra: dict[str, Any] | None = None) -> dict[str, Any]:
         entry = {
             "id": len(self._query_log) + 1,
             "查询时间": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -96,6 +105,8 @@ class Store:
             "pending": status != "正常",
             "abnormal": status in ("慢查询", "异常终止"),
         }
+        if extra:
+            entry.update(extra)
         self._query_log.append(entry)
         return entry
 
@@ -175,6 +186,81 @@ class Store:
 
     def recalc_history(self) -> list[dict[str, Any]]:
         return self._recalc_history
+
+    # ── Observation windows ──
+
+    def add_window(self, window: dict[str, Any]) -> dict[str, Any]:
+        self._observation_windows.append(window)
+        return window
+
+    def observation_windows(self) -> list[dict[str, Any]]:
+        return self._observation_windows
+
+    def find_window(self, window_id: str) -> dict[str, Any] | None:
+        for window in self._observation_windows:
+            if window.get("window_id") == window_id:
+                return window
+        return None
+
+    def window_for_time(self, sample_time: str) -> dict[str, Any] | None:
+        """按样本采样时间找到它归属的观察窗；落不进任何窗口返回 None。"""
+        for window in self._observation_windows:
+            if window["window_start"] <= sample_time < window["window_end"]:
+                return window
+        return None
+
+    # ── Metric samples ──
+
+    def add_sample(self, sample: dict[str, Any]) -> dict[str, Any]:
+        sample.setdefault("id", len(self._metric_samples) + 1)
+        self._metric_samples.append(sample)
+        return sample
+
+    def metric_samples(self) -> list[dict[str, Any]]:
+        return self._metric_samples
+
+    def find_sample(self, sample_id: int) -> dict[str, Any] | None:
+        for sample in self._metric_samples:
+            if int(sample.get("id", 0)) == sample_id:
+                return sample
+        return None
+
+    def samples_for_window(self, window_id: str, metric_name: str | None = None) -> list[dict[str, Any]]:
+        rows = [s for s in self._metric_samples if s.get("window_id") == window_id]
+        if metric_name is not None:
+            rows = [s for s in rows if s.get("metric_name") == metric_name]
+        return rows
+
+    # ── Inspection batches ──
+
+    def add_inspection_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+        self._inspection_batches.append(batch)
+        return batch
+
+    def inspection_batches(self) -> list[dict[str, Any]]:
+        return self._inspection_batches
+
+    def find_inspection_batch(self, batch_id: str) -> dict[str, Any] | None:
+        for batch in self._inspection_batches:
+            if batch.get("batch_id") == batch_id:
+                return batch
+        return None
+
+    # ── Alerts ──
+
+    def add_alert(self, alert: dict[str, Any]) -> dict[str, Any]:
+        alert.setdefault("id", len(self._alerts) + 1)
+        self._alerts.append(alert)
+        return alert
+
+    def alerts(self) -> list[dict[str, Any]]:
+        return self._alerts
+
+    def find_alert(self, alert_id: int) -> dict[str, Any] | None:
+        for alert in self._alerts:
+            if int(alert.get("id", 0)) == alert_id:
+                return alert
+        return None
 
     # ── Data artifacts for cross-module consumption ──
 

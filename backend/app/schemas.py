@@ -29,3 +29,22 @@ class EntryPayload(BaseModel):
 class ActionPayload(BaseModel):
     action: str
     remark: str | None = None
+
+
+class WindowPayload(BaseModel):
+    window_id: str
+    window_start: str
+    window_end: str
+
+
+class SamplePayload(BaseModel):
+    metric_name: str
+    value: float
+    sample_time: str
+    reported_at: str | None = None
+
+
+class BatchInspectionPayload(BaseModel):
+    window_id: str
+    rule_ids: list[int] | None = None
+    batch_id: str | None = None

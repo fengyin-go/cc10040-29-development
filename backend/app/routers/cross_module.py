@@ -8,6 +8,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.schemas import (
+    BatchInspectionPayload,
+    SamplePayload,
+    WindowPayload,
+)
+
 from app.services.metric_definition import MetricDefinitionService
 from app.services.caliber_version import CaliberVersionService
 from app.services.query_builder import QueryBuilderService
@@ -237,6 +243,112 @@ def detection_coverage():
     """获取异常检测覆盖率"""
     svc = AnomalyDetectorService()
     return svc.get_detection_coverage()
+
+
+# ── 批量巡检：观察窗、采样接口、批次、补跑与告警处置闸门 ──
+
+@router.post("/anomaly-detector/windows")
+def register_window(payload: WindowPayload):
+    """登记观察窗（按 [start, end) 半开区间归属样本）"""
+    svc = AnomalyDetectorService()
+    result = svc.register_window(payload.window_id, payload.window_start, payload.window_end)
+    if "error" in result:
+        return {"ok": False, **result}
+    return {"ok": True, "window": result}
+
+
+@router.get("/anomaly-detector/windows")
+def list_windows():
+    """列出全部观察窗"""
+    return {"items": AnomalyDetectorService().list_windows()}
+
+
+@router.post("/anomaly-detector/samples")
+def ingest_sample(payload: SamplePayload):
+    """指标采样接口：按采样时间归属观察窗，迟到样本仍归原窗"""
+    svc = AnomalyDetectorService()
+    result = svc.ingest_sample(
+        payload.metric_name, payload.value, payload.sample_time, payload.reported_at)
+    if "error" in result:
+        return {"ok": False, **result}
+    return {"ok": True, "sample": result}
+
+
+@router.get("/anomaly-detector/samples")
+def list_samples(window_id: str | None = None):
+    """查询采样数据，可按观察窗过滤"""
+    result = AnomalyDetectorService().list_samples(window_id)
+    if isinstance(result, dict) and "error" in result:
+        return {"ok": False, **result}
+    return {"items": result}
+
+
+@router.post("/anomaly-detector/batches")
+def run_batch_inspection(payload: BatchInspectionPayload):
+    """发起/继续批量巡检；带 batch_id 且批次已存在时按原批次补跑，已确认结论只计一次"""
+    svc = AnomalyDetectorService()
+    result = svc.run_batch_inspection(payload.window_id, payload.rule_ids, payload.batch_id)
+    if result is not None and "error" in result:
+        return {"ok": False, **result}
+    return {"ok": True, "batch": result}
+
+
+@router.get("/anomaly-detector/batches")
+def list_batches(window_id: str | None = None):
+    """按批次汇总巡检覆盖情况"""
+    return {"items": AnomalyDetectorService().list_batches(window_id)}
+
+
+@router.get("/anomaly-detector/batches/{batch_id}")
+def get_batch(batch_id: str):
+    """查询批次明细：每条规则取到的指标值、采样时间和判定"""
+    svc = AnomalyDetectorService()
+    result = svc.get_batch(batch_id)
+    if result is None:
+        return {"ok": False, "error": f"巡检批次 {batch_id} 不存在"}
+    return {"ok": True, "batch": result}
+
+
+@router.get("/anomaly-detector/batches/{batch_id}/pending")
+def get_pending_items(batch_id: str):
+    """按原批次列出待补样本的规则（值班员的补项清单）"""
+    svc = AnomalyDetectorService()
+    if svc.get_batch(batch_id) is None:
+        return {"ok": False, "error": f"巡检批次 {batch_id} 不存在"}
+    return {"ok": True, "batch_id": batch_id, "pending_items": svc.get_pending_items(batch_id)}
+
+
+@router.get("/anomaly-detector/batches/{batch_id}/log-trace")
+def get_batch_log_trace(batch_id: str):
+    """查询日志关联采样接口响应，并核算该批次覆盖与待补项"""
+    svc = AnomalyDetectorService()
+    result = svc.get_batch_log_trace(batch_id)
+    if "error" in result:
+        return {"ok": False, **result}
+    return {"ok": True, "trace": result}
+
+
+@router.get("/anomaly-detector/windows/{window_id}/coverage")
+def get_window_coverage(window_id: str):
+    """核算当班巡检覆盖、可处置告警与整窗报告齐全度"""
+    svc = AnomalyDetectorService()
+    result = svc.get_window_coverage(window_id)
+    if "error" in result:
+        return {"ok": False, **result}
+    return {"ok": True, "coverage": result}
+
+
+@router.get("/anomaly-detector/alerts")
+def list_alerts(window_id: str | None = None, batch_id: str | None = None):
+    """列出巡检产生的告警及其确认/处置状态"""
+    return {"items": AnomalyDetectorService().list_alerts(window_id, batch_id)}
+
+
+@router.post("/anomaly-detector/alerts/{alert_id}/handle")
+def handle_alert(alert_id: int, handler: str = "值班员"):
+    """告警处置闸门：未确认的检测不得进入告警处置"""
+    svc = AnomalyDetectorService()
+    return svc.handle_alert(alert_id, handler)
 
 
 # ── 重算引擎 ──
